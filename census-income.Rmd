@@ -1,0 +1,392 @@
+---
+title: "Census Income Project"
+author: "STAVROS OIKONOMOU"
+output:
+  html_document:
+    df_print: paged
+---
+
+### Loading the libraries
+
+```{r, warning=FALSE,message=FALSE}
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("dplyr","tidyr","ggplot2","ROCR","corrplot","sparklyr","caret","missForest",
+              "doParallel","R.utils","glmnet","coefplot")
+
+ipak(packages)
+```
+```{r}
+temp <- tempfile()
+if(!file.exists("./census-income.data.gz")){
+  
+    fileUrl <- "https://archive.ics.uci.edu/ml/machine-learning-databases/census-income-mld/census-income.data.gz"  
+    
+    download.file(fileUrl, destfile = "./census-income.data.gz", mode="wb")
+}
+
+if(!file.exists("census-income.data")){
+    gunzip("census-income.data.gz","census-income.data",remove=F)
+}
+rm(fileUrl)
+```
+
+```{r}
+temp <- tempfile()
+if(!file.exists("./census-income.test.gz")){
+  
+    fileUrl2 <- "https://archive.ics.uci.edu/ml/machine-learning-databases/census-income-mld/census-income.test.gz"  
+    
+    download.file(fileUrl2, destfile = "./census-income.test.gz", mode="wb")
+}
+
+if(!file.exists("census-income.test")){
+    gunzip("census-income.test.gz","census-income.test",remove=F)
+}
+rm(fileUrl2)
+```
+
+### Loading the databases
+```{r}
+df <- read.table("census-income.data", sep = ','
+                 ,stringsAsFactors = TRUE ,na.strings = c(" ?", " Not in universe"))
+df_test <- read.table("census-income.test", sep = ','
+                      ,stringsAsFactors = TRUE,na.strings = c(" ?", " Not in universe"))
+```
+
+
+```{r}
+head(df,3)
+```
+
+### Adding the column names
+```{r}
+colns <- c("Age","Class_of_Worker","Industry_code","occupation_code",
+           "education","wage_per_hour","enrolled_in_edu_inst_last wk",
+           "marital_status","major_industry_code","major_occupation_code","race",
+           "hispanic_Origin","sex","member_of_a_labor_union","reason_for_unemployment",
+           "full_part_time_employment_stat","capital_gains","capital_losses",
+           "divdends_from_stocks","tax_filer_status","region_of_previous_residence",
+           "state_of_previous_residence","detailed_household_and_family_stat",
+           "detailed_household_summary_in_household","instance_weight",
+           "migration_code-change_msa","migration_code-change_reg",
+           "migration_code-move_within_reg","live_in_house_1_year_ago",
+           "migration_prev_res_sunbelt","num_persons_worked_for_employer",
+           "family_members_under 18","country_birth_father","country_birth_mother",
+           "country_birth_self","citizenship","ownbusiness_or_self_employed",
+           "fillinc_questionnaire_for_veterans_admin","veteran_benefits" ,
+           "Weeks_worked_in_year", "Year", "Salary")
+           
+colnames(df) <- colns
+colnames(df_test) <- colns
+```
+
+```{r}
+head(df,3)
+```
+
+### Data Structure
+```{r}
+str(df)
+```
+### Data Summary
+```{r}
+summary(df)
+```
+### Number of Distinct values for all columns
+```{r}
+lengths(lapply(df,unique))
+```
+
+
+```{r}
+nas <- inspectdf::inspect_na(df)
+todrop<-unlist(nas %>%
+                 filter(pcnt>50) %>%
+                 select(col_name))
+
+
+near_zero_var <- nearZeroVar(df, freqCut = 99/1)
+near_zero_var <- names(df)[near_zero_var]
+
+
+df <- df %>% 
+  select(-c(todrop,near_zero_var))
+
+df <- df %>%
+  select(-instance_weight)
+
+df <- df %>% 
+  select(-major_industry_code,-detailed_household_and_family_stat)
+
+df <- df %>%
+  select(-tax_filer_status,-live_in_house_1_year_ago)
+
+```
+
+```{r, eval=FALSE}
+paok <- ifelse(df[df$full_part_time_employment_stat==" Children or Armed Forces", "Age"] <=18 , "Children","Armed Forces")
+paok <- data.frame(paok)
+
+df[df$full_part_time_employment_stat==" Children or Armed Forces","full_part_time_employment_stat"] <- as.factor(paok$paok)
+```
+
+
+```{r}
+registerDoParallel(cores=3)
+dfn<- df %>% 
+  select(-Salary) %>%
+  missForest(maxiter=1,ntree=10, variablewise=T, parallelize = "forests")
+```
+```{r}
+df[,-20] <- dfn$ximp
+```
+
+## Data visualization and analysis
+```{r}
+ggplot(df, aes(x=Salary))+ geom_bar(aes(fill=Salary))
+
+ggplot(df, aes(x=Age))+ geom_histogram(aes(colour=I("black"), fill=I("blue")),bins=20)
+
+ggplot(df, aes(x=race))+ geom_bar(aes( colour=I("black"), fill=race))
+
+ggplot(df, aes(x=sex))+ geom_bar(aes( colour=I("black"), fill=sex))
+
+ggplot(df, aes(x=citizenship))+ geom_bar(aes( colour=I("black"), fill=citizenship)) + coord_flip() + theme(legend.position = "none")
+
+ggplot(df, aes(x=as.factor(marital_status)))+ geom_bar(aes( colour=I("black"), fill=marital_status))
+
+ggplot(df, aes(x=education))+ geom_bar(aes( colour=I("black"), fill=education)) + coord_flip() + theme(legend.position = "none")
+
+```
+## Data correlations
+
+```{r}
+boxplot(Age~Salary, data= df , main = "Age vs Salary", 
+        xlab = "Salary", ylab = "Age", col = "orange")
+```
+As we can see from the boxplot the age has important correlation with Salary. It looks like that you need
+to be older to earn more than 50.000.
+```{r}
+boxplot(num_persons_worked_for_employer~Salary, data= df , main = "Num of person worked for employer vs Salary", 
+        xlab = "Salary", ylab = "Num of person worked for employer", col = "Green")
+```
+Working in a place with more employees seems to be important for Salary
+```{r}
+boxplot(Weeks_worked_in_year~Salary, data= df , main = "Weeks worked vs Salary", 
+        xlab = "Salary", ylab = "Weeks worked in a year", col = "red")
+```
+```{r}
+ggplot(df, aes(x=as.factor(Salary))) + geom_bar(stat = "count", aes(fill=sex)) + xlab("Salary") + ggtitle("Salary with Sex") + theme_classic()
+```
+Here we can see that in our database females are more than males but the males have significant more people earning more than 50.000. So we can see there is a correlation between sex and salary
+```{r}
+qplot (Salary, data = df, fill = race) + facet_grid (. ~ race)
+```
+Race is also very important. it seems to be rare to earn more than 50k if you are not white.
+```{r}
+qplot (Salary, data = df, fill = as.factor(veteran_benefits) ) + facet_grid (. ~ veteran_benefits)
+```
+You need to have veteran benefits if you want to earn more than 50k
+```{r}
+qplot (Salary, data = df, fill = marital_status) + facet_grid (. ~ marital_status)
+```
+```{r}
+qplot (Salary, data = df, fill = live_in_house_1_year_ago) + facet_grid (. ~ live_in_house_1_year_ago)
+```
+
+### Feature Selection
+
+```{r}
+qplot (Salary, data = df, fill = as.factor(Year)) + facet_grid (. ~ Year)
+```
+```{r}
+df_test <- df_test %>% select(-c(todrop,near_zero_var,instance_weight,major_industry_code,
+                                 detailed_household_and_family_stat,tax_filer_status,
+                                 live_in_house_1_year_ago))
+```
+
+
+## Binding the train and test database for feature engineering
+
+#### Usually we need to split the data in train and test set after feature engineering, so we can avoid different kind of problems. One of the problems is that some times we have different number of levels or entries for train and test set regarding to the same feature. But this is not the correct strategy for all project, we always have to aware of data leakage
+```{r}
+df$train <- T
+df_test$train <- F
+
+df_total <- rbind(df,df_test)
+
+df_total$Salary <- ifelse(df_total$Salary==" - 50000.",0,1)
+
+df_total$race <- ifelse(df_total$race==" White", "White", "Not White")
+
+df_total$hispanic_Origin <- ifelse(df_total$hispanic_Origin==" All other", 0, 1)
+
+df_total$citizenship <- ifelse(df_total$citizenship %in% 
+                                 c(" Native- Born abroad of American Parent(s)",
+                                   " Native- Born in Puerto Rico or U S Outlying",
+                                   " Native- Born in the United States",
+                                   " Foreign born- U S citizen by naturalization"),
+                          "US citizenship", "No US citizenship")
+
+levels(df_total$marital_status)[2:4] <- "Married"
+
+
+levels(df_total$education)[levels(df_total$education) %in% c(" Children"," Less than 1st grade",
+                                   " 1st 2nd 3rd or 4th grade",
+                                   " 5th or 6th grade"," 7th and 8th grade",
+                                   " 9th grade"," 10th grade"," 11th grade",
+                                   " 12th grade no diploma" )] <- 0
+levels(df_total$education)[levels(df_total$education) %in% c(" High school graduate", 
+                                                             " Some college but no degree")] <- 1
+levels(df_total$education)[levels(df_total$education) %in% 
+                             c(" Associates degree-academic program",
+                               " Prof school degree (MD DDS DVM LLB JD)",
+                               " Associates degree-occup /vocational")] <- 2
+levels(df_total$education)[levels(df_total$education)==" Bachelors degree(BA AB BS)"] <- 3
+levels(df_total$education)[levels(df_total$education)==" Masters degree(MA MS MEng MEd MSW MBA)"] <- 4
+levels(df_total$education)[levels(df_total$education)==" Doctorate degree(PhD EdD)"] <- 5
+
+
+df_total <- df_total %>% mutate_if(is.character,factor)
+```
+### Splitting the database to train and test set
+```{r}
+df_train <- df_total %>% filter(train==T) %>% select(-train)
+df_test <- df_total %>% filter(train==F) %>% select(-train)
+```
+
+```{r}
+formula <- Salary ~ Age + Industry_code + occupation_code + education +
+  marital_status + race + hispanic_Origin + sex+ full_part_time_employment_stat +
+  detailed_household_summary_in_household + num_persons_worked_for_employer +
+  country_birth_father + country_birth_mother + country_birth_self +
+  citizenship + ownbusiness_or_self_employed + veteran_benefits + 
+  Weeks_worked_in_year + Year
+
+landX_train <- build.x(formula = formula , data=df_train,
+                       contrasts=FALSE, sparse=TRUE)
+landY_train <- build.y(formula = formula, data=df_train)
+
+value2 <- glmnet(x=landX_train,y=landY_train, family="binomial")
+
+value3 <- cv.glmnet(x=landX_train,y=landY_train, family="binomial", nfolds = 5)
+
+plot(value2, xvar="lambda")
+coefpath(value2)
+coefplot(value3,sort="magnitude",lambda="lambda.1se")
+
+landX_test <- build.x(formula = formula , data=df_test,
+                       contrasts=FALSE, sparse=TRUE)
+pred <- predict(value3, newx = landX_test, s="lambda.1se",type = 'class')
+pred2 <- as.factor(pred)
+confusionMatrix(df_test$Salary,pred2)
+
+confusion.glmnet(value3,)
+```
+
+## Connecting to Spark
+```{r}
+sc <- spark_connect(master = "local")
+```
+### Connecting the datasets to Spark
+```{r}
+dfs_train <- sdf_copy_to(sc,df_train)
+dfs_test <- sdf_copy_to(sc,df_test)
+```
+### Logistic Regression Algorithm
+```{r}
+lr_model <- dfs_train %>%
+  ml_logistic_regression(Salary~.)
+lr_pred <- ml_predict(lr_model, dfs_test)
+logistic_regression_pred <- ml_binary_classification_evaluator(lr_pred)
+logistic_regression_pred
+```
+
+### Random Forest Algorithm
+```{r}
+rf_model <- dfs_train %>%
+  ml_random_forest(Salary~. , type = "classification")
+rf_pred <- ml_predict(rf_model, dfs_test)
+random_forest_pred <- ml_multiclass_classification_evaluator(rf_pred)
+random_forest_pred
+```
+
+### Support Vector Machine
+```{r}
+svm_model <- dfs_train %>%
+  ml_linear_svc(Salary~.)
+svm_pred <- ml_predict(svm_model, dfs_test)
+support_vector_pred <- ml_binary_classification_evaluator(svm_pred)
+support_vector_pred
+```
+
+### Table with prediction from each algorithm
+```{r}
+pred_table <- c(logistic_regression_pred,decision_tree_pred,random_forest_pred,naive_bayes_pred,support_vector_pred)
+names(pred_table) <- c("Logistic","Decision Tree","Random Forest","Naive Bayes","Support Vector Machine")
+pred_table
+```
+#### The Desicion Tree algorithm has better perfomance but because i can not collect in my computer (not enough compute power) from Spark system i can not print the Confusion Matrix, ROC, AUC. So i will train model out of Spark system but the only model i can run in my PC is the Logistic regression algorithm. Also logistic regression is a good choice for avoiding overfitting.
+
+
+```{r}
+model_glm <- glm(Salary~., data = df_train, family = binomial)
+summary(model_glm)
+```
+```{r}
+pred_test <- predict(model_glm, newdata = df_test[-19], type = 'response')
+pred_train <- predict(model_glm, newdata = df_train[-19], type = 'response')
+```
+### ROC for test set
+```{r}
+ROC_test <- prediction(pred_test,df_test$Salary)
+ROCperf_test <- performance(ROC_test,"tpr","fpr")
+plot(ROCperf_test)
+```
+### ROC for train set
+```{r}
+ROC_train <- prediction(pred_train,df_train$Salary)
+ROCperf_train <- performance(ROC_train,"tpr","fpr")
+plot(ROCperf_train)
+```
+### AUC for test set
+```{r}
+as.numeric(performance(ROC_test,"auc")@y.values)
+```
+### AUC for train set
+```{r}
+as.numeric(performance(ROC_train,"auc")@y.values)
+```
+### Confusion Matrix for test set
+```{r}
+cm_test <- table(df_test$Salary, pred_test >=0.5)
+cm_test
+```
+### Accuracy for test set
+```{r}
+accuracy_test <- (cm_test[1,1]+cm_test[2,2])/sum(cm_test)
+accuracy_test
+```
+### Confusion Matrix for train set
+```{r}
+cm_train <- table(df_train$Salary, pred_train >=0.5)
+cm_train
+```
+### Accuracy for train set
+```{r}
+accuracy_train <- (cm_train[1,1]+cm_train[2,2])/sum(cm_train)
+accuracy_train
+```
+
+
+#### As we can see we got very good results. The most important step to avoid overfitting is that we choose to apply the linear regression algorithm. Linear regression is very simple algorithm and it is rare to overfit. Also we have a very large dataset which also help us to avoid overfitting.
+
+
+#### There are lot of things we can do to make this model better. Grid search for better hyperparameters, , Scaling (Standardization/normalization),encoding,regularization, choosing better model like Neural Networks, spend more time in feature selection and feature engineering
+
