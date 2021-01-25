@@ -1,0 +1,341 @@
+---
+title: "Census Income Project"
+author: "STAVROS OIKONOMOU"
+output:
+  html_document:
+    df_print: paged
+---
+
+### Loading the libraries
+
+```{r, warning=FALSE,message=FALSE}
+ipak <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+packages <- c("dplyr","tidyr","ggplot2","ROCR","corrplot","sparklyr","caret","missForest",
+              "doParallel","R.utils","glmnet","coefplot","knitr","GGally")
+
+ipak(packages)
+```
+### Downloading and unziping the data
+
+```{r, warning=FALSE, message=FALSE}
+temp <- tempfile()
+if(!file.exists("./census-income.data.gz")){
+  
+    fileUrl <- "https://archive.ics.uci.edu/ml/machine-learning-databases/census-income-mld/census-income.data.gz"  
+    
+    download.file(fileUrl, destfile = "./census-income.data.gz", mode="wb")
+}
+
+if(!file.exists("census-income.data")){
+    gunzip("census-income.data.gz","census-income.data",remove=F)
+}
+rm(fileUrl)
+```
+
+```{r, warning=FALSE, message=FALSE}
+temp <- tempfile()
+if(!file.exists("./census-income.test.gz")){
+  
+    fileUrl2 <- "https://archive.ics.uci.edu/ml/machine-learning-databases/census-income-mld/census-income.test.gz"  
+    
+    download.file(fileUrl2, destfile = "./census-income.test.gz", mode="wb")
+}
+
+if(!file.exists("census-income.test")){
+    gunzip("census-income.test.gz","census-income.test",remove=F)
+}
+rm(fileUrl2)
+```
+
+### Loading the databases
+```{r}
+df <- read.table("census-income.data", sep = ','
+                 ,stringsAsFactors = TRUE ,na.strings = c(" ?", " Not in universe"))
+df_test <- read.table("census-income.test", sep = ','
+                      ,stringsAsFactors = TRUE,na.strings = c(" ?", " Not in universe"))
+```
+
+
+### Adding the column names
+```{r}
+colns <- c("Age","Class_of_Worker","Industry_code","occupation_code",
+           "education","wage_per_hour","enrolled_in_edu_inst_last wk",
+           "marital_status","major_industry_code","major_occupation_code","race",
+           "hispanic_Origin","sex","member_of_a_labor_union","reason_for_unemployment",
+           "full_part_time_employment_stat","capital_gains","capital_losses",
+           "divdends_from_stocks","tax_filer_status","region_of_previous_residence",
+           "state_of_previous_residence","detailed_household_and_family_stat",
+           "detailed_household_summary_in_household","instance_weight",
+           "migration_code-change_msa","migration_code-change_reg",
+           "migration_code-move_within_reg","live_in_house_1_year_ago",
+           "migration_prev_res_sunbelt","num_persons_worked_for_employer",
+           "family_members_under 18","country_birth_father","country_birth_mother",
+           "country_birth_self","citizenship","ownbusiness_or_self_employed",
+           "fillinc_questionnaire_for_veterans_admin","veteran_benefits" ,
+           "Weeks_worked_in_year", "Year", "Salary")
+           
+colnames(df) <- colns
+colnames(df_test) <- colns
+```
+
+```{r}
+head(df,3)
+```
+
+### Data Structure
+```{r, warning=FALSE, message=FALSE}
+kable(str(df))
+```
+
+### Data Summary
+
+```{r, warning=FALSE, message=FALSE}
+summary(df)
+```
+
+### Dimensions of train and test set
+
+```{r}
+dim(df)
+dim(df_test)
+```
+
+### Feature Selection
+
+```{r, warning=FALSE, message=FALSE}
+nas <- inspectdf::inspect_na(df) #count percentage of NA's
+todrop<-unlist(nas %>%
+                 filter(pcnt>50) %>%
+                 select(col_name)) # filtering features with NA percentage bigger than 50
+
+
+near_zero_var <- nearZeroVar(df, freqCut = 99/1) 
+near_zero_var <- names(df)[near_zero_var] # finding variables with almost zero variance
+
+
+df <- df %>% 
+  select(-c(todrop,near_zero_var))
+
+df <- df %>%
+  select(-instance_weight) # removing weight feature, we not gonna use it for prediction purposes
+
+df <- df %>%  # same information with other variables
+  select(-major_industry_code,-detailed_household_and_family_stat) 
+
+df <- df %>% # most of values are "nofiler"
+  select(-tax_filer_status,-live_in_house_1_year_ago)
+```
+
+```{r, eval=FALSE, include=FALSE}
+filtr <- ifelse(df[df$full_part_time_employment_stat==" Children or Armed Forces", "Age"] <=18 , "Children","Armed Forces")
+filtr <- data.frame(filtr)
+
+df[df$full_part_time_employment_stat==" Children or Armed Forces","full_part_time_employment_stat"] <- as.factor(filtr$filtr)
+```
+
+### Using missForest function to fill NA. we gonna use 
+```{r}
+registerDoParallel(cores=3)
+dfn<- df %>% 
+  select(-Salary) %>%
+  missForest(maxiter=1,ntree=10, variablewise=T, parallelize = "forests")
+df[,-20] <- dfn$ximp
+```
+
+
+## Data visualization and analysis
+
+```{r}
+ggplot(df, aes(x=Salary))+ geom_bar(aes(fill=Salary))
+
+ggplot(df, aes(x=Age))+ geom_histogram(aes(colour=I("black"), fill=I("blue")),bins=20)
+
+ggplot(df, aes(x=race))+ geom_bar(aes( colour=I("black"), fill=race))
+
+ggplot(df, aes(x=sex))+ geom_bar(aes( colour=I("black"), fill=sex))
+
+ggplot(df, aes(x=citizenship))+ geom_bar(aes( colour=I("black"), fill=citizenship)) + coord_flip() + theme(legend.position = "none")
+
+ggplot(df, aes(x=as.factor(marital_status)))+ geom_bar(aes( colour=I("black"), fill=marital_status))
+
+ggplot(df, aes(x=education))+ geom_bar(aes( colour=I("black"), fill=education)) + coord_flip() + theme(legend.position = "none")
+
+```
+## Data correlations
+
+```{r}
+boxplot(Age~Salary, data= df , main = "Age vs Salary", 
+        xlab = "Salary", ylab = "Age", col = "orange")
+```
+As we can see from the boxplot the age has important correlation with Salary. It looks like that you need to be older to earn more than 50.000.
+```{r}
+boxplot(num_persons_worked_for_employer~Salary, data= df , main = "Num of person worked for employer vs Salary", 
+        xlab = "Salary", ylab = "Num of person worked for employer", col = "Green")
+```
+Working in a place with more employees seems to be important for Salary
+```{r}
+boxplot(Weeks_worked_in_year~Salary, data= df , main = "Weeks worked vs Salary", 
+        xlab = "Salary", ylab = "Weeks worked in a year", col = "red")
+```
+
+Here we can see that in our database females are more than males but the males have significant more people earning more than 50.000. So we can see there is a correlation between sex and salary
+
+```{r}
+ggplot(df, aes(x=as.factor(Salary))) + geom_bar(stat = "count", aes(fill=sex)) + xlab("Salary") + ggtitle("Salary with Sex") + theme_classic()
+```
+
+Race is also very important. it seems to be rare to earn more than 50k if you are not white.
+```{r}
+qplot (Salary, data = df, fill = race) + facet_grid (. ~ race)
+```
+
+You need to have veteran benefits if you want to earn more than 50k
+```{r}
+qplot (Salary, data = df, fill = as.factor(veteran_benefits) ) + facet_grid (. ~ veteran_benefits)
+```
+
+```{r}
+qplot (Salary, data = df, fill = marital_status) + facet_grid (. ~ marital_status)
+```
+
+
+
+```{r}
+df_test <- df_test %>% select(-c(todrop,near_zero_var,instance_weight,major_industry_code,
+                                 detailed_household_and_family_stat,tax_filer_status,
+                                 live_in_house_1_year_ago))
+```
+
+```{r}
+registerDoParallel(cores=3)
+dfnt<- df_test %>% 
+  select(-Salary) %>%
+  missForest(maxiter=1,ntree=10, variablewise=T, parallelize = "forests")
+
+df_test[,-20] <- dfnt$ximp
+```
+
+## Binding the train and test database for feature engineering
+#### Usually we need to split the data in train and test set after feature engineering, so we can avoid different kind of problems. One of the problems is that some times we have different number of levels or entries for train and test set regarding to the same feature. But this is not the correct strategy for all project, we always have to aware of data leakage
+
+```{r}
+df$train <- T
+df_test$train <- F
+
+df_total <- rbind(df,df_test)
+
+df_total$Salary <- ifelse(df_total$Salary==" - 50000.",0,1)
+
+df_total$race <- ifelse(df_total$race==" White", "White", "Not White")
+
+df_total$hispanic_Origin <- ifelse(df_total$hispanic_Origin==" All other", 0, 1)
+
+df_total$citizenship <- ifelse(df_total$citizenship %in% 
+                                 c(" Native- Born abroad of American Parent(s)",
+                                   " Native- Born in Puerto Rico or U S Outlying",
+                                   " Native- Born in the United States",
+                                   " Foreign born- U S citizen by naturalization"),
+                          "US citizenship", "No US citizenship")
+
+levels(df_total$marital_status)[2:4] <- "Married"
+
+
+levels(df_total$education)[levels(df_total$education) %in% c(" Children"," Less than 1st grade",
+                                   " 1st 2nd 3rd or 4th grade",
+                                   " 5th or 6th grade"," 7th and 8th grade",
+                                   " 9th grade"," 10th grade"," 11th grade",
+                                   " 12th grade no diploma" )] <- 0
+levels(df_total$education)[levels(df_total$education) %in% c(" High school graduate", 
+                                                             " Some college but no degree")] <- 1
+levels(df_total$education)[levels(df_total$education) %in% 
+                             c(" Associates degree-academic program",
+                               " Prof school degree (MD DDS DVM LLB JD)",
+                               " Associates degree-occup /vocational")] <- 2
+levels(df_total$education)[levels(df_total$education)==" Bachelors degree(BA AB BS)"] <- 3
+levels(df_total$education)[levels(df_total$education)==" Masters degree(MA MS MEng MEd MSW MBA)"] <- 4
+levels(df_total$education)[levels(df_total$education)==" Doctorate degree(PhD EdD)"] <- 5
+
+
+df_total <- df_total %>% mutate_if(is.character,factor)
+
+vect <- c("Industry_code","occupation_code","num_persons_worked_for_employer",
+          "ownbusiness_or_self_employed","Weeks_worked_in_year","Year","veteran_benefits")
+
+df_total <- df_total %>% mutate_if(names(df_total) %in% vect, as.factor)
+```
+### Splitting the database to train and test set
+```{r}
+df_train <- df_total %>% filter(train==T) %>% select(-train)
+df_test <- df_total %>% filter(train==F) %>% select(-train)
+```
+
+```{r, include=FALSE, eval=FALSE}
+formula <- Salary ~ Age + Industry_code + occupation_code + education +
+  marital_status + race + hispanic_Origin + sex+ full_part_time_employment_stat +
+  detailed_household_summary_in_household + num_persons_worked_for_employer +
+  country_birth_father + country_birth_mother + country_birth_self +
+  citizenship + ownbusiness_or_self_employed + veteran_benefits + 
+  Weeks_worked_in_year + Year
+
+landX_train <- build.x(formula = formula , data=df_train,
+                       contrasts=FALSE, sparse=TRUE)
+landY_train <- build.y(formula = formula, data=df_train)
+
+value2 <- glmnet(x=landX_train,y=landY_train, family="binomial")
+
+value3 <- cv.glmnet(x=landX_train,y=landY_train, family="binomial", nfolds = 5)
+
+plot(value2, xvar="lambda")
+coefpath(value2)
+coefplot(value3,sort="magnitude",lambda="lambda.1se")
+
+landX_test <- build.x(formula = formula , data=df_test,
+                       contrasts=FALSE, sparse=TRUE)
+pred <- predict(value3, newx = landX_test, s="lambda.1se",type = 'class')
+pred2 <- as.factor(pred)
+confusionMatrix(df_test$Salary,pred2)
+
+confusion.glmnet(value3,)
+```
+
+## Connecting to Spark
+```{r}
+sc <- spark_connect(master = "local")
+```
+### Connecting the datasets to Spark
+```{r}
+dfs_train <- sdf_copy_to(sc,df_train)
+dfs_test <- sdf_copy_to(sc,df_test)
+```
+
+## GRADIENT BOOSTED TREE
+```{r}
+GBT_model <- dfs_train %>%
+  ml_gbt_classifier(Salary~.)
+GBT_pred <- ml_predict(GBT_model, dfs_test)
+```
+
+## AREA UNDER ROC
+```{r}
+GBT_pred2 <- ml_binary_classification_evaluator(GBT_pred)
+GBT_pred2
+```
+
+## Confusion Matrix
+```{r}
+cm <- table(pull(GBT_pred, label), pull(GBT_pred, prediction))
+confusionMatrix(cm)
+```
+
+```{r}
+featureImport <- ml_tree_feature_importance(GBT_model)
+featureImport[1:10,] %>% ggplot(aes(reorder(feature, importance),importance,fill=feature)) + 
+  geom_bar(stat = "identity") + coord_flip() + ggtitle("Top 10 feature importance") + 
+  theme(legend.position="none") + ylab("importance") + xlab("feature")
+```
